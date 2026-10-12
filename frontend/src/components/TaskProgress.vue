@@ -54,6 +54,9 @@
               text-position="inside"
               size="20"
             ></progress-bar>
+            <p v-if="failureReason(task)" class="task-error" :title="failureReason(task)">
+              {{ failureReason(task) }}
+            </p>
           </div>
           <div class="task-actions">
             <button
@@ -141,6 +144,13 @@ export default {
         return this.$t("tasks.queued", { action: this.$t(`tasks.${task.action}`) });
       }
       return this.$t(`tasks.${task.action}`);
+    },
+    failureReason(task) {
+      if (task.status !== "failed" && task.status !== "partial") {
+        return "";
+      }
+      const failed = (task.items || []).filter((i) => i.status === "failed" && i.message);
+      return failed.length > 0 ? failed[0].message : "";
     },
     progressVal(task) {
       if (task.totalBytes > 0) {
@@ -307,6 +317,17 @@ export default {
   font-size: 0.75em;
   font-variant-numeric: tabular-nums;
   color: var(--textSecondary);
+}
+
+.task-error {
+  margin: 0.35em 0 0;
+  font-size: 0.75em;
+  color: var(--red);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .task-actions {

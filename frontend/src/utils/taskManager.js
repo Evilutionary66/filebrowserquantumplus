@@ -232,29 +232,30 @@ class TaskManager {
     const failedItems = (entry.items || []).filter((i) => i.status === "failed");
 
     if (entry.status === "completed") {
-      notify.showSuccessToast(t("tasks.completed", { action: label }));
+      // Prominent in-app notification (same pattern as the synchronous extract
+      // path) so success is unmistakable, not just a 2s toast.
+      notify.showSuccess(t("tasks.completed", { action: label }));
       if (entry.action === "copy" || entry.action === "move") {
         notifyMoveCopyComplete(entry.action, entry.totalItems || entry.doneItems);
       }
     } else if (entry.status === "partial") {
-      notify.showWarningToast(
-        t("tasks.partial", {
-          action: label,
-          succeeded: entry.doneItems,
-          failed: failedItems.length,
-        })
-      );
-      notifyOperationError(t("tasks.partial", {
+      const message = t("tasks.partial", {
         action: label,
         succeeded: entry.doneItems,
         failed: failedItems.length,
-      }));
+      });
+      // Persistent until dismissed: the user must be able to see that the
+      // operation did not fully succeed.
+      notify.showError(message, { persistent: true });
+      notifyOperationError(message);
     } else if (entry.status === "cancelled") {
       notify.showInfoToast(t("tasks.cancelled", { action: label }));
     } else {
-      const message = failedItems[0]?.message || t("prompts.operationFailed");
-      notify.showErrorToast(t("tasks.failed", { action: label }));
-      notifyOperationError(message);
+      const reason = failedItems[0]?.message || t("prompts.operationFailed");
+      const message = `${t("tasks.failed", { action: label })}: ${reason}`;
+      // Persistent until dismissed so the failure and its reason are visible.
+      notify.showError(message, { persistent: true });
+      notifyOperationError(reason);
     }
 
     const ttl =
