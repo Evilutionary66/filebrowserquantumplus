@@ -241,7 +241,7 @@ func createConfig(configpath string, noInput bool) error {
 		}
 		fmt.Printf("Error: '%s' is not a valid path. Please enter a path to a file ending in .sqlite", config.Server.DatabaseV2.Path)
 	}
-	const defaultFrontendName = "FileBrowser Quantum"
+	const defaultFrontendName = "FileBrowser Quantum+"
 	brandName := askQuestion(reader, "What should the application brand name be?", defaultFrontendName)
 	if brandName != defaultFrontendName {
 		config.Frontend.Name = brandName

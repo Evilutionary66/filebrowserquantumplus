@@ -1,17 +1,17 @@
 <div align="center">
 
   [![Codacy Badge](https://app.codacy.com/project/badge/Grade/0b548794f2ac4871a0cf7aa9ecab049f)](https://app.codacy.com/gh/gtsteffaniak/filebrowser/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-  [![latest version](https://img.shields.io/github/v/release/gtsteffaniak/filebrowser)](https://github.com/gtsteffaniak/filebrowser/releases)
+  [![latest version](https://img.shields.io/github/v/release/Evilutionary66/filebrowserquantumplus)](https://github.com/Evilutionary66/filebrowserquantumplus/releases)
   [![DockerHub Pulls](https://img.shields.io/docker/pulls/gtstef/filebrowser?label=latest%20Docker%20pulls)](https://hub.docker.com/r/gtstef/filebrowser)
   [![Apache-2.0 License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
   [![Donate](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://github.com/gtsteffaniak/filebrowser/wiki/Q&A#is-there-a-way-to-donate-or-support-this-project)
 
-  <img width="150" alt="FileBrowser Quantum logo" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174">
-  <h3>FileBrowser Quantum</h3>
+  <img width="150" alt="FileBrowser Quantum+ logo" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174">
+  <h3>FileBrowser Quantum+</h3>
   The best free self-hosted web-based file manager.
   <br/><br/>
-  <img width="800" alt="FileBrowser Quantum file listing in dark mode" src="https://filebrowserquantum.com/images/generated/listing/view-mode-normal-dark.jpg">
+  <img width="800" alt="FileBrowser Quantum+ file listing in dark mode" src="https://filebrowserquantum.com/images/generated/listing/view-mode-normal-dark.jpg">
 </div>
 
 ## Pinned
@@ -22,9 +22,9 @@
 
 ## About
 
-FileBrowser Quantum provides an easy way to access and manage your files from the web. It has a modern responsive interface that has many advanced features to manage users, access, sharing, and file preview and editing.
+FileBrowser Quantum+ provides an easy way to access and manage your files from the web. It has a modern responsive interface that has many advanced features to manage users, access, sharing, and file preview and editing.
 
-This version is called "Quantum" because it packs tons of advanced features into a tiny and easy-to-run file. Unlike the majority of alternative options, FileBrowser Quantum is simple to install and easy to configure.
+This version is called "Quantum+" because it packs tons of advanced features into a tiny and easy-to-run file. Unlike the majority of alternative options, FileBrowser Quantum+ is simple to install and easy to configure.
 
 The goal for this repo is to become the best open-source self-hosted file browsing application that exists -- **all for free**. This repo will always be free and open-source.
 
@@ -32,7 +32,7 @@ Ready to try it out? See [Getting Started Docs](https://filebrowserquantum.com/e
 
 ## How its different
 
-FileBrowser Quantum is a massive fork of the file browser open-source project with the following changes:
+FileBrowser Quantum+ is a massive fork of the file browser open-source project with the following changes:
 
   1. ✅ Better source configuration - multiple sources, include/exclude rules, and [more](https://filebrowserquantum.com/en/docs/configuration/sources/)
   2. ✅ Login support for OIDC, LDAP, JWT, password + 2FA, and proxy.
@@ -62,7 +62,7 @@ FileBrowser Quantum is a massive fork of the file browser open-source project wi
 Notable features that this fork *does not* have (removed):
  - ❌ shell commands are completely removed and will not be returned.
 
-FileBrowser Quantum differs significantly from the original version. Many of these changes required a significant overhaul. Creating a fork was a necessary process to make the program better. There have been many growing pains, but a stable release is planned and coming soon.
+FileBrowser Quantum+ differs significantly from the original version. Many of these changes required a significant overhaul. Creating a fork was a necessary process to make the program better. There have been many growing pains, but a stable release is planned and coming soon.
 
 ## The UI
 
@@ -84,7 +84,7 @@ a pop-up menu.
 See the [Official Docs](https://filebrowserquantum.com/). Contributions are welcome and encouraged! See [FilebrowserDocs Github](https://github.com/quantumx-apps/filebrowserDocs).
 
 ## Comparison Chart
-Application Name | <img width="48" alt="" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174" > Quantum | <img width="48" alt="" src="https://github.com/filebrowser/filebrowser/blob/master/frontend/public/img/logo.svg" > Filebrowser | <img width="48" alt="" src="https://github.com/mickael-kerjean/filestash/blob/master/public/assets/logo/app_icon.png?raw=true" > Filestash | <img width="48" alt="" src="https://avatars.githubusercontent.com/u/19211038?s=200&v=4" >  Nextcloud | <img width="48" alt="" src="https://cdn.iconscout.com/icon/free/png-256/free-google-drive-logo-icon-svg-download-png-2476481.png" > Google_Drive | <img width="48" alt="" src="https://avatars.githubusercontent.com/u/6422152?v=4" > FileRun
+Application Name | <img width="48" alt="" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174" > Quantum+ | <img width="48" alt="" src="https://github.com/filebrowser/filebrowser/blob/master/frontend/public/img/logo.svg" > Filebrowser | <img width="48" alt="" src="https://github.com/mickael-kerjean/filestash/blob/master/public/assets/logo/app_icon.png?raw=true" > Filestash | <img width="48" alt="" src="https://avatars.githubusercontent.com/u/19211038?s=200&v=4" >  Nextcloud | <img width="48" alt="" src="https://cdn.iconscout.com/icon/free/png-256/free-google-drive-logo-icon-svg-download-png-2476481.png" > Google_Drive | <img width="48" alt="" src="https://avatars.githubusercontent.com/u/6422152?v=4" > FileRun
 --- | --- | --- | --- | --- | --- | --- |
 Filesystem support            | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 Linux                         | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |

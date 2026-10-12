@@ -283,7 +283,7 @@ export default {
     oidcAvailable: () => globalVars.oidcAvailable,
     passwordAvailable: () => globalVars.passwordAvailable,
     ldapAvailable: () => globalVars.ldapAvailable,
-    name: () => globalVars.name || "FileBrowser Quantum",
+    name: () => globalVars.name || "FileBrowser Quantum+",
     loginIconUrl: () => globalVars.loginIcon,
     isDarkMode() {
       return defaultDarkMode();

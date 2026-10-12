@@ -12,11 +12,11 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/database/users"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/errors"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/ports"
-	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/utils"
-	"github.com/gtsteffaniak/filebrowser/backend/internal/database/users"
+	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 )
 
 type webAuthnSession struct {
@@ -293,7 +293,7 @@ func deriveWebAuthnConfig(cfg *settings.PasskeyAuthConfig) (*webauthn.Config, er
 		displayName = settings.Config.Frontend.Name
 	}
 	if displayName == "" {
-		displayName = "FileBrowser Quantum"
+		displayName = "FileBrowser Quantum+"
 	}
 
 	origins := cfg.RPOrigins

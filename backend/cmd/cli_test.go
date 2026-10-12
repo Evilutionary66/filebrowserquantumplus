@@ -209,7 +209,7 @@ func TestGenerateSetupConfigYAML_MinimalWithComments(t *testing.T) {
 	assert.Contains(t, out, "#")
 	assert.Contains(t, out, "/var/lib/files")
 	assert.Contains(t, out, "8080")
-	assert.NotContains(t, out, "FileBrowser Quantum")
+	assert.NotContains(t, out, "FileBrowser Quantum+")
 	assert.NotContains(t, out, "darkMode")
 	assert.NotContains(t, out, "minSearchLength:")
 	assert.NotContains(t, out, "frontend:")

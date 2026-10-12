@@ -259,7 +259,7 @@ func validateOidcAuth() error {
 	customClient := &http.Client{
 		Transport: &userAgentTransport{
 			base:      transport,
-			userAgent: fmt.Sprintf("FileBrowser Quantum - %s (OIDC Client)", version.Version),
+			userAgent: fmt.Sprintf("FileBrowser Quantum+ - %s (OIDC Client)", version.Version),
 		},
 	}
 

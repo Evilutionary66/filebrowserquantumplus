@@ -13,7 +13,7 @@ test("upload prompt", async ({ page, checkForErrors, openContextMenu, theme }) =
 
   // Screenshots Docker uses a single "playwright" source (see _docker/src/screenshots/backend/config.yaml).
   await page.goto("/files/");
-  await expect(page).toHaveTitle("FileBrowser Quantum - Files - playwright-files");
+  await expect(page).toHaveTitle("FileBrowser Quantum+ - Files - playwright-files");
   await openContextMenu();
 
   // Context Action uses :label="$t('general.upload')" → accessible name can include suffix placeholders; match loosely.

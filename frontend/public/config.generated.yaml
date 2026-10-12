@@ -140,7 +140,7 @@ auth:
   key: ""                                 # secret: HMAC key for JWT tokens. If unset in config/env, one is generated and stored in the application database.
   totpSecret: ""                          # secret: secret used to encrypt TOTP secrets
 frontend:
-  name: "FileBrowser Quantum"             # display name, PWA installation name is capped at 30 characters
+  name: "FileBrowser Quantum+"             # display name, PWA installation name is capped at 30 characters
   disableDefaultLinks: false              # disable default links in the sidebar
   disableUsedPercentage: false            # disable used percentage for the sources in the sidebar
   externalLinks:
@@ -164,7 +164,7 @@ frontend:
         description: "The default theme"  # The description of the theme to display in the UI.
         css: ""                           # The css file path and filename to use for the theme.
   favicon: ""                             # path to a favicon to use for the frontend
-  description: "FileBrowser Quantum is a file manager for the web which can be used to manage files on your server" # description that shows up in html head meta description
+  description: "FileBrowser Quantum+ is a file manager for the web which can be used to manage files on your server" # description that shows up in html head meta description
   loginIcon: ""                           # path to an image file for the login page icon
   loginButtonText: ""                     # text to display on the login button
   oidcLoginButtonText: ""                 # text to display on the OIDC login button

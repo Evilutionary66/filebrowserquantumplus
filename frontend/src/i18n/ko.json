@@ -313,7 +313,7 @@
     "analyticsView": "분석 데이터 보기",
     "analyticsViewDescription": "이 서버에서 수집된 배포 분석 스냅샷의 읽기 전용 보기를 엽니다.",
     "analyticsEnabled": "배포 분석 데이터 전송",
-    "analyticsEnabledDescription": "옵트인 배포 분석 기능은 애플리케이션을 개선하는 데 도움을 주기 위해 익명화된 정보를 FileBrowser Quantum 개발자 서버로 전송합니다.",
+    "analyticsEnabledDescription": "옵트인 배포 분석 기능은 애플리케이션을 개선하는 데 도움을 주기 위해 익명화된 정보를 FileBrowser Quantum+ 개발자 서버로 전송합니다.",
     "analyticsLoadFailed": "분석 설정을 불러오지 못했습니다.",
     "analyticsUpdateFailed": "분석 설정 업데이트에 실패했습니다.",
     "analyticsPreviewFailed": "분석 진단 정보를 불러오지 못했습니다.",

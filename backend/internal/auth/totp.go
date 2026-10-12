@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/database/users"
+	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 	"github.com/gtsteffaniak/go-cache/cache"
 	"github.com/gtsteffaniak/go-logger/logger"
 	"github.com/pquerna/otp"
@@ -21,7 +21,7 @@ import (
 // Constants for TOTP (Time-based One-Time Password) configuration.
 const (
 	// IssuerName is the name of the application or service.
-	IssuerName = "FileBrowser Quantum"
+	IssuerName = "FileBrowser Quantum+"
 
 	// TokenValidTime defines the total duration a token is considered valid.
 	// Note: The actual validation window might be slightly longer depending on the period.
@@ -78,7 +78,7 @@ func GenerateOtpForUser(user *users.User) (string, error) {
 	// set cache so verify can attempt to use it but not require it for user yet.
 	TotpCache.Set(user.Username, secretToStore+"||"+nonce)
 	// Use the original base32 secret in the OTP URL, not the encrypted version
-	url := fmt.Sprintf("otpauth://totp/%v?secret=%v", "FileBrowser Quantum: "+user.Username, secretText)
+	url := fmt.Sprintf("otpauth://totp/%v?secret=%v", "FileBrowser Quantum+: "+user.Username, secretText)
 	return url, nil
 }
 

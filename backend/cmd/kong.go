@@ -124,7 +124,7 @@ type cliRoot struct {
 }
 
 func (versionCmd) Run() error {
-	fmt.Printf(`FileBrowser Quantum - A modern web-based file manager
+	fmt.Printf(`FileBrowser Quantum+ - A modern web-based file manager
 	Version 	 : %v
 	Commit 		 : %v
 	Release Info 	 : https://github.com/gtsteffaniak/filebrowser/releases/tag/%v
@@ -200,7 +200,7 @@ func runCLI() (keepGoing bool, dbExists bool) {
 
 	parser, err := kong.New(&rootCLI,
 		kong.Name("filebrowser"),
-		kong.Description("FileBrowser Quantum - A modern web-based file manager"),
+		kong.Description("FileBrowser Quantum+ - A modern web-based file manager"),
 		kong.Bind(&rootCLI.Globals),
 	)
 	if err != nil {

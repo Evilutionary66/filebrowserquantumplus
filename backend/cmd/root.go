@@ -103,7 +103,7 @@ func StartFilebrowser() {
 	for path, source := range settings.Config.Server.SourceMap {
 		sourceList = append(sourceList, fmt.Sprintf("%v: %v", source.Name, path))
 	}
-	logger.Infof("Initializing FileBrowser Quantum (%v)", version.Version)
+	logger.Infof("Initializing FileBrowser Quantum+ (%v)", version.Version)
 	logger.Infof("Using Config file        : %v", configPath)
 	logger.Infof("Auth Methods             : %v", settings.Config.Auth.AuthMethods)
 	logger.Info(database)
