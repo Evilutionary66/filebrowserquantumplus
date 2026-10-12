@@ -607,23 +607,26 @@ export default {
         });
 
         try {
+          let result;
           if (this.isShare) {
-            await resourcesApi.moveCopyPublic(this.shareHash, items, 'move', overwrite, rename);
+            result = await resourcesApi.moveCopyPublic(this.shareHash, items, 'move', overwrite, rename);
           } else {
-            await resourcesApi.moveCopy(items, 'move', overwrite, rename);
+            result = await resourcesApi.moveCopy(items, 'move', overwrite, rename);
           }
-          const buttonProps = {
-            icon: 'folder',
-            buttons: [
-              goToItemNotificationButton(
-                this.$t('buttons.goToItem'),
-                this.isShare ? this.shareHash : this.currentSource,
-                node.path,
-                this.isShare
-              ),
-            ],
-          };
-          notify.showSuccess(this.$t('prompts.moveSuccess'), buttonProps);
+          if (!result?.taskId) {
+            const buttonProps = {
+              icon: 'folder',
+              buttons: [
+                goToItemNotificationButton(
+                  this.$t('buttons.goToItem'),
+                  this.isShare ? this.shareHash : this.currentSource,
+                  node.path,
+                  this.isShare
+                ),
+              ],
+            };
+            notify.showSuccess(this.$t('prompts.moveSuccess'), buttonProps);
+          }
           mutations.closeTopPrompt();
           mutations.setReload(true);
         } catch (error) {

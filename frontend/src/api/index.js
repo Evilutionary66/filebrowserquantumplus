@@ -8,6 +8,7 @@
 // - /api/tools/ -> tools.js
 // - /api/office/ -> office.js
 // - /api/media/ -> media.js
+// - /api/tasks/ -> tasks.js
 // - /public/api/* -> public functions in respective files (e.g., resourcesApi.fetchFilesPublic)
 
 import * as accessApi from "./access.js";
@@ -17,6 +18,7 @@ import * as officeApi from "./office.js";
 import * as resourcesApi from "./resources.js";
 import * as settingsApi from "./settings.js";
 import * as shareApi from "./share.js";
+import * as tasksApi from "./tasks.js";
 import * as toolsApi from "./tools.js";
 import * as usersApi from "./users.js";
 import * as quotasApi from "./quotas.js";
@@ -30,6 +32,7 @@ export {
     resourcesApi,
     settingsApi,
     shareApi,
+    tasksApi,
     toolsApi,
     usersApi,
 };

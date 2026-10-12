@@ -107,7 +107,7 @@ func TestCreateZipPublicShareUsesShareOwnerAccessRules(t *testing.T) {
 	d := shareArchiveContext(owner, "/shared")
 
 	var buf bytes.Buffer
-	if err := createZip(d, sourceName, &buf, "/shared"); err != nil {
+	if err := createZip(d, sourceName, &buf, nil, "/shared"); err != nil {
 		t.Fatalf("createZip: %v", err)
 	}
 	names := readZipFileNames(buf.Bytes())
@@ -138,7 +138,7 @@ func TestCreateZipPublicShareUsesShareOwnerAccessRules(t *testing.T) {
 		},
 	}
 	var emptyBuf bytes.Buffer
-	if err := createZip(dBroken, sourceName, &emptyBuf, "/shared"); err != nil {
+	if err := createZip(dBroken, sourceName, &emptyBuf, nil, "/shared"); err != nil {
 		t.Fatalf("createZip: %v", err)
 	}
 	if len(readZipFileNames(emptyBuf.Bytes())) != 0 {

@@ -333,7 +333,7 @@ export default {
       this.isLoading = true;
       try {
         const toSource = this.destSource || this.itemSource;
-        await resourcesApi.unarchive({
+        const result = await resourcesApi.unarchive({
           fromSource: this.itemSource,
           toSource: toSource !== this.itemSource ? toSource : undefined,
           path: this.itemPath,
@@ -341,6 +341,13 @@ export default {
           deleteAfter: this.deleteAfter,
           ...(this.isZip && { filenameEncoding: this.filenameEncoding }),
         });
+        // 202 = queued as a background task; progress is shown in the task panel
+        if (result?.taskId) {
+          mutations.setReload(true);
+          mutations.closeTopPrompt();
+          this.isLoading = false;
+          return;
+        }
         mutations.setReload(true);
         mutations.closeTopPrompt();
 

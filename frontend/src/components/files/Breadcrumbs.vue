@@ -274,23 +274,26 @@ export default {
         });
 
         try {
+          let result;
           if (getters.isShare()) {
-            await resourcesApi.moveCopyPublic(state.shareInfo.hash, itemsToMove, "move", overwrite, rename);
+            result = await resourcesApi.moveCopyPublic(state.shareInfo.hash, itemsToMove, "move", overwrite, rename);
           } else {
-            await resourcesApi.moveCopy(itemsToMove, "move", overwrite, rename);
+            result = await resourcesApi.moveCopy(itemsToMove, "move", overwrite, rename);
           }
 
-          notify.showSuccess(this.$t("prompts.moveSuccess"), {
-            icon: "folder",
-            buttons: [
-              goToItemNotificationButton(
-                this.$t("buttons.goToItem"),
-                source,
-                targetPath,
-                getters.isShare()
-              ),
-            ],
-          });
+          if (!result?.taskId) {
+            notify.showSuccess(this.$t("prompts.moveSuccess"), {
+              icon: "folder",
+              buttons: [
+                goToItemNotificationButton(
+                  this.$t("buttons.goToItem"),
+                  source,
+                  targetPath,
+                  getters.isShare()
+                ),
+              ],
+            });
+          }
           mutations.closeTopPrompt();
           mutations.setReload(true);
         } catch (error) {

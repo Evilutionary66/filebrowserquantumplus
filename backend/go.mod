@@ -74,6 +74,7 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/kovidgoyal/go-parallel v1.1.1 // indirect
 	github.com/kovidgoyal/go-shm v1.0.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

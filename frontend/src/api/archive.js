@@ -1,5 +1,6 @@
 import { notify } from "@/notify/index.ts";
 import { getApiPath } from "@/utils/url.js";
+import { taskManager } from "@/utils/taskManager.js";
 import { fetchURL } from "./utils.ts";
 
 /**
@@ -34,7 +35,12 @@ export async function createArchive(opts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return response.json();
+    const data = await response.json();
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (data?.taskId) {
+      taskManager.track(data.taskId);
+    }
+    return data;
   } catch (err) {
     notify.showError(err.message || "Error creating archive");
     throw err;
@@ -73,7 +79,12 @@ export async function unarchive(opts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return response.json();
+    const data = await response.json();
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (data?.taskId) {
+      taskManager.track(data.taskId);
+    }
+    return data;
   } catch (err) {
     notify.showError(err.message || "Error extracting archive");
     throw err;

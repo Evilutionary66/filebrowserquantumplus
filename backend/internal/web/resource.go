@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	stdliberrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/internal/preview"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/quota"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/state"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/tasks"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/indexing"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/indexing/iteminfo"
@@ -391,6 +393,8 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 		Failed:    make([]BulkDeleteItem, 0),
 	}
 
+	var resolved []resolvedDeleteItem
+
 	// Process each item one at a time
 	for _, item := range items {
 		rawPath := item.Path
@@ -501,7 +505,7 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 			}
 
 			// Check user scope for this source
-			_, err := filePermUser.GetScopeForSourceName(item.Source)
+			userScope, err := filePermUser.GetScopeForSourceName(item.Source)
 			if err != nil {
 				response.Failed = append(response.Failed, BulkDeleteItem{
 					Source:  item.Source,
@@ -554,18 +558,19 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 				})
 				continue
 			}
-			err = files.DeleteFiles(item.Source, fileInfo.RealPath, fileInfo.Type == "directory")
-			if err != nil {
-				response.Failed = append(response.Failed, BulkDeleteItem{
-					Source:  item.Source,
-					Path:    rawPath,
-					Message: err.Error(),
-				})
-				continue
-			}
-			preview.DelThumbs(r.Context(), *fileInfo)
+			// Defer the physical delete so large batches can run as a background task.
+			// The share branch above stays synchronous (small, public-facing).
+			resolved = append(resolved, resolvedDeleteItem{
+				source:    item.Source,
+				rawPath:   rawPath,
+				realPath:  fileInfo.RealPath,
+				isDir:     fileInfo.Type == "directory",
+				fileInfo:  fileInfo,
+				indexPath: utils.JoinScopedIndexPath(userScope, sanitizedPath),
+			})
+			continue
 		}
-		// Success — echo the client path in the response
+		// Success — echo the client path in the response (share branch only)
 		loggedItem := BulkDeleteItem{
 			Source: item.Source,
 			Path:   rawPath,
@@ -574,6 +579,31 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 			loggedItem.Source = d.Share.GetSourceName()
 		}
 		response.Succeeded = append(response.Succeeded, loggedItem)
+	}
+
+	// Large delete batches run as a background task so the request returns
+	// immediately and the client can poll for progress.
+	if d.Share.Hash == "" && len(resolved) > 0 &&
+		(len(resolved) > 1 || resolvedDeleteTotalBytes(resolved) > asyncTaskBytesThreshold) {
+		return startDeleteTask(w, r, d, response, resolved)
+	}
+
+	// Perform each resolved delete synchronously (unchanged behavior for small batches).
+	for _, ri := range resolved {
+		if err := files.DeleteFiles(ri.source, ri.realPath, ri.isDir); err != nil {
+			logger.Errorf("resource bulk delete handler: error deleting file/directory: %v", err)
+			response.Failed = append(response.Failed, BulkDeleteItem{
+				Source:  ri.source,
+				Path:    ri.rawPath,
+				Message: "error deleting file/directory, admin must check the logs",
+			})
+			continue
+		}
+		preview.DelThumbs(r.Context(), *ri.fileInfo)
+		response.Succeeded = append(response.Succeeded, BulkDeleteItem{
+			Source: ri.source,
+			Path:   ri.rawPath,
+		})
 	}
 
 	// Determine status code based on results
@@ -1291,6 +1321,10 @@ func ResourcePatchHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 		Failed:    make([]MoveCopyItem, 0),
 	}
 
+	// resolved collects items that passed all validation/quota checks; the actual
+	// file operations run after the loop, either synchronously or as a task.
+	var resolved []resolvedPatchItem
+
 	// Process each item
 	for _, item := range req.Items {
 		clientFromPath := item.FromPath
@@ -1532,41 +1566,64 @@ func ResourcePatchHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 			continue
 		}
 
-		// Perform the action
-		err = patchAction(r.Context(), patchActionParams{
+		// Estimate bytes for progress reporting (cheap index lookup) and collect the
+		// resolved item; the actual action runs below either synchronously or as a task.
+		estimatedBytes, _ := state.IndexedPathBytes(item.FromSource, fullSrcIndexPath, isSrcDir)
+		resolved = append(resolved, resolvedPatchItem{
+			item:           item,
+			clientFromPath: clientFromPath,
+			clientToPath:   clientToPath,
+			realSrc:        realSrc,
+			realDest:       realDest,
+			isSrcDir:       isSrcDir,
+			sessionID:      patchSessionID,
+			estimatedBytes: estimatedBytes,
+		})
+	}
+
+	// Large batches run as a background task so the request returns immediately and
+	// the client can poll for progress. Small batches and public shares keep the
+	// old synchronous response shape so existing flows are unaffected.
+	if d.Share.Hash == "" && len(resolved) > 0 && shouldRunAsTask(req.Action, resolved, resolvedPatchTotalBytes(resolved)) {
+		return startPatchTask(w, r, d, req, response, resolved)
+	}
+
+	// Perform each resolved action synchronously (unchanged behavior).
+	for _, ri := range resolved {
+		err := patchAction(r.Context(), patchActionParams{
 			action:   req.Action,
-			srcIndex: item.FromSource,
-			dstIndex: item.ToSource,
-			src:      realSrc,
-			dst:      realDest,
+			srcIndex: ri.item.FromSource,
+			dstIndex: ri.item.ToSource,
+			src:      ri.realSrc,
+			dst:      ri.realDest,
 			d:        d,
-			isSrcDir: isSrcDir,
+			isSrcDir: ri.isSrcDir,
 		})
 		if err != nil {
-			releaseCopyMoveQuota(patchSessionID)
-			logger.Errorf("Could not run patch action. src=%v dst=%v err=%v", realSrc, realDest, err)
+			releaseCopyMoveQuota(ri.sessionID)
+			logger.Errorf("Could not run patch action. src=%v dst=%v err=%v", ri.realSrc, ri.realDest, err)
 			if d.Share.Hash != "" {
-				item.Message = "could not run patch action"
+				ri.item.Message = "could not run patch action"
 				response.Failed = append(response.Failed, MoveCopyItem{
-					Message: item.Message,
+					Message: ri.item.Message,
 				})
 				continue
 			}
-			item.Message = err.Error()
-			response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
+			ri.item.Message = err.Error()
+			response.Failed = append(response.Failed, moveCopyWithClientPaths(ri.item, ri.clientFromPath, ri.clientToPath))
 			continue
 		}
 
-		if commitErr := commitCopyMoveQuota(patchSessionID); commitErr != nil {
+		if commitErr := commitCopyMoveQuota(ri.sessionID); commitErr != nil {
 			logger.Warningf("quota commit after patch failed, retrying: %v", commitErr)
-			if retryErr := state.ForceCommitSessionQuota(patchSessionID, 0); retryErr != nil {
+			if retryErr := state.ForceCommitSessionQuota(ri.sessionID, 0); retryErr != nil {
 				logger.Warningf("quota commit after patch failed: %v", retryErr)
 			}
 		}
 
 		// Success
-		response.Succeeded = append(response.Succeeded, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
-		activity.RecordPatchItem(r, toActor(d), req.Action, activity.MoveCopyItem{FromSource: item.FromSource, FromPath: clientFromPath, ToPath: clientToPath})
+		response.Succeeded = append(response.Succeeded, moveCopyWithClientPaths(ri.item, ri.clientFromPath, ri.clientToPath))
+		activity.RecordPatchItem(r, toActor(d), req.Action, activity.MoveCopyItem{FromSource: ri.item.FromSource, FromPath: ri.clientFromPath, ToPath: ri.clientToPath})
 	}
 
 	if len(response.Failed) == 0 && len(response.Succeeded) == 0 {
@@ -1697,12 +1754,13 @@ type patchActionParams struct {
 	dst      string
 	d        *Context
 	isSrcDir bool
+	hook     *fileutils.CopyHook
 }
 
 func patchAction(ctx context.Context, params patchActionParams) error {
 	switch params.action {
 	case "copy":
-		err := files.CopyResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst)
+		err := files.CopyResourceHook(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst, params.hook)
 		return err
 	case "rename", "move":
 		idx := indexing.GetIndex(params.srcIndex)
@@ -1729,7 +1787,7 @@ func patchAction(ctx context.Context, params patchActionParams) error {
 
 		// delete thumbnails
 		preview.DelThumbs(ctx, *fileInfo)
-		err = files.MoveResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst)
+		err = files.MoveResourceHook(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst, params.hook)
 		if err != nil {
 			return err
 		}
@@ -1737,6 +1795,223 @@ func patchAction(ctx context.Context, params patchActionParams) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported action %s: %w", params.action, errors.ErrInvalidRequestParams)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Background task support for large copy/move/rename batches
+// ---------------------------------------------------------------------------
+
+// asyncTaskBytesThreshold: single-item batches above this estimated size also
+// run as background tasks so big copies/moves show progress instead of blocking.
+const asyncTaskBytesThreshold = 100 * 1024 * 1024
+
+// resolvedPatchItem is a patch item that passed validation and quota reservation.
+type resolvedPatchItem struct {
+	item           MoveCopyItem
+	clientFromPath string
+	clientToPath   string
+	realSrc        string
+	realDest       string
+	isSrcDir       bool
+	sessionID      string
+	estimatedBytes int64
+}
+
+func resolvedPatchTotalBytes(items []resolvedPatchItem) int64 {
+	var total int64
+	for _, ri := range items {
+		total += ri.estimatedBytes
+	}
+	return total
+}
+
+// shouldRunAsTask decides whether a batch is large enough to run in the background.
+// Move/rename batches that stay within a single source are instant rename
+// syscalls (same volume), so they always run synchronously.
+func shouldRunAsTask(action string, items []resolvedPatchItem, totalBytes int64) bool {
+	if action == "move" || action == "rename" {
+		allSameSource := true
+		for _, ri := range items {
+			if ri.item.FromSource != ri.item.ToSource {
+				allSameSource = false
+				break
+			}
+		}
+		if allSameSource {
+			return false
+		}
+	}
+	return len(items) > 1 || totalBytes > asyncTaskBytesThreshold
+}
+
+// startPatchTask spawns a background task for the resolved patch items and
+// responds 202 with the task id.
+func startPatchTask(w http.ResponseWriter, r *http.Request, d *Context, req MoveCopyRequest, response MoveCopyResponse, resolved []resolvedPatchItem) (int, error) {
+	taskItems := make([]tasks.Item, 0, len(resolved))
+	for _, ri := range resolved {
+		taskItems = append(taskItems, tasks.Item{
+			FromSource: ri.item.FromSource,
+			FromPath:   ri.clientFromPath,
+			ToSource:   ri.item.ToSource,
+			ToPath:     ri.clientToPath,
+			Status:     tasks.ItemPending,
+		})
+	}
+	t := tasks.New(d.User.Username, req.Action, taskItems, resolvedPatchTotalBytes(resolved))
+	// Preserve any validation failures that happened before the task was created.
+	for _, failed := range response.Failed {
+		t.Items = append(t.Items, tasks.Item{
+			FromSource: failed.FromSource,
+			FromPath:   failed.FromPath,
+			ToSource:   failed.ToSource,
+			ToPath:     failed.ToPath,
+			Status:     tasks.ItemFailed,
+			Message:    failed.Message,
+		})
+		t.DoneItems++
+	}
+	t.TotalItems = len(t.Items)
+
+	actor := toActor(d)
+	go runPatchTask(t, req.Action, resolved, actor, d)
+
+	return RenderJSON(w, r, map[string]interface{}{"taskId": t.ID}, http.StatusAccepted)
+}
+
+// runPatchTask performs the resolved patch actions in the background, updating
+// task progress as each item completes.
+func runPatchTask(t *tasks.Task, action string, resolved []resolvedPatchItem, actor *activity.Actor, d *Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("background patch task %v panicked: %v", t.ID, rec)
+		}
+		t.Finish()
+	}()
+	t.Begin()
+	for i, ri := range resolved {
+		if t.CancelRequested() {
+			t.MarkItemCancelled(i)
+			releaseCopyMoveQuota(ri.sessionID)
+			continue
+		}
+		t.MarkItemRunning(i)
+		err := patchAction(context.Background(), patchActionParams{
+			action:   action,
+			srcIndex: ri.item.FromSource,
+			dstIndex: ri.item.ToSource,
+			src:      ri.realSrc,
+			dst:      ri.realDest,
+			d:        d,
+			isSrcDir: ri.isSrcDir,
+			hook:     t.Hook(),
+		})
+		switch {
+		case err != nil && stdliberrors.Is(err, fileutils.ErrCopyCancelled):
+			t.MarkItemCancelled(i)
+			releaseCopyMoveQuota(ri.sessionID)
+		case err != nil:
+			logger.Errorf("background patch task %v: action failed. src=%v dst=%v err=%v", t.ID, ri.realSrc, ri.realDest, err)
+			t.MarkItemFailed(i, "could not run patch action")
+			releaseCopyMoveQuota(ri.sessionID)
+		default:
+			if commitErr := commitCopyMoveQuota(ri.sessionID); commitErr != nil {
+				logger.Warningf("quota commit after background patch failed, retrying: %v", commitErr)
+				if retryErr := state.ForceCommitSessionQuota(ri.sessionID, 0); retryErr != nil {
+					logger.Warningf("quota commit after background patch failed: %v", retryErr)
+				}
+			}
+			t.MarkItemDone(i)
+			// For rename/move (instant rename) keep byte progress monotonic.
+			t.SyncBytes(t.DoneBytes + ri.estimatedBytes)
+			activity.RecordPatchItem(nil, actor, action, activity.MoveCopyItem{
+				FromSource: ri.item.FromSource,
+				FromPath:   ri.clientFromPath,
+				ToPath:     ri.clientToPath,
+			})
+		}
+	}
+}
+
+type resolvedDeleteItem struct {
+	source         string
+	rawPath        string
+	realPath       string
+	isDir          bool
+	fileInfo       *iteminfo.ExtendedFileInfo
+	indexPath      string
+	estimatedBytes int64
+}
+
+func resolvedDeleteTotalBytes(items []resolvedDeleteItem) int64 {
+	var total int64
+	for _, ri := range items {
+		total += ri.estimatedBytes
+	}
+	return total
+}
+
+// startDeleteTask spawns a background task for the resolved deletes and responds
+// 202 with the task id.
+func startDeleteTask(w http.ResponseWriter, r *http.Request, d *Context, response BulkDeleteResponse, resolved []resolvedDeleteItem) (int, error) {
+	for _, ri := range resolved {
+		ri.estimatedBytes, _ = state.IndexedPathBytes(ri.source, ri.indexPath, ri.isDir)
+	}
+	taskItems := make([]tasks.Item, 0, len(resolved))
+	for _, ri := range resolved {
+		taskItems = append(taskItems, tasks.Item{
+			FromSource: ri.source,
+			FromPath:   ri.rawPath,
+			Status:     tasks.ItemPending,
+		})
+	}
+	t := tasks.New(d.User.Username, "delete", taskItems, resolvedDeleteTotalBytes(resolved))
+	for _, failed := range response.Failed {
+		t.Items = append(t.Items, tasks.Item{
+			FromSource: failed.Source,
+			FromPath:   failed.Path,
+			Status:     tasks.ItemFailed,
+			Message:    failed.Message,
+		})
+		t.DoneItems++
+	}
+	t.TotalItems = len(t.Items)
+
+	actor := toActor(d)
+	go runDeleteTask(t, resolved, actor)
+
+	return RenderJSON(w, r, map[string]interface{}{"taskId": t.ID}, http.StatusAccepted)
+}
+
+// runDeleteTask performs the resolved deletes in the background, updating task
+// progress as each item completes.
+func runDeleteTask(t *tasks.Task, resolved []resolvedDeleteItem, actor *activity.Actor) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("background delete task %v panicked: %v", t.ID, rec)
+		}
+		t.Finish()
+	}()
+	t.Begin()
+	succeeded := make([]BulkDeleteItem, 0, len(resolved))
+	for i, ri := range resolved {
+		if t.CancelRequested() {
+			t.MarkItemCancelled(i)
+			continue
+		}
+		t.MarkItemRunning(i)
+		if err := files.DeleteFiles(ri.source, ri.realPath, ri.isDir); err != nil {
+			logger.Errorf("background delete task %v: error deleting file/directory: %v", t.ID, err)
+			t.MarkItemFailed(i, "error deleting file/directory, admin must check the logs")
+			continue
+		}
+		preview.DelThumbs(context.Background(), *ri.fileInfo)
+		t.MarkItemDone(i)
+		t.SyncBytes(t.DoneBytes + ri.estimatedBytes)
+		succeeded = append(succeeded, BulkDeleteItem{Source: ri.source, Path: ri.rawPath})
+	}
+	if len(succeeded) > 0 {
+		activity.RecordBulkDelete(nil, actor, bulkDeleteActivityItems(succeeded))
 	}
 }
 

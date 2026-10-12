@@ -262,6 +262,18 @@ export default {
           ? await resourcesApi.bulkDeletePublic(itemsForDelete)
           : await resourcesApi.bulkDelete(itemsForDelete);
 
+        // 202 accepted: queued as a background task; taskManager tracks progress
+        if (response?.taskId) {
+          buttons.success("delete");
+          mutations.closeTopPrompt();
+          if (!this.items) {
+            mutations.resetSelected();
+          }
+          mutations.setReload(true);
+          this.deleting = false;
+          return;
+        }
+
         const failed = Array.isArray(response?.failed) ? response.failed : [];
         const succeeded = Array.isArray(response?.succeeded) ? response.succeeded : [];
         this.failedItems = failed;

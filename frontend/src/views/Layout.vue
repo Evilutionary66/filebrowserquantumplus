@@ -24,6 +24,7 @@
   <Search v-if="showSearch" />
   <Notifications />
   <Toast :toasts="toasts" />
+  <TaskProgress />
   <StatusBar :class="{ moveWithSidebar: moveWithSidebar.shouldMove }" />
   <ContextMenu v-bind="contextMenuProps"></ContextMenu>
   <Tooltip />
@@ -51,6 +52,7 @@ import { generateRandomCode } from "@/utils/auth";
 import { globalVars } from "@/utils/constants";
 import { syncDocumentTheme, syncEventTheme } from "@/utils/theme";
 import Search from "@/components/Search.vue";
+import TaskProgress from "@/components/TaskProgress.vue";
 
 export default {
   name: "layout",
@@ -58,6 +60,7 @@ export default {
     ContextMenu,
     Notifications,
     Toast,
+    TaskProgress,
     StatusBar,
     defaultBar,
     Sidebar,

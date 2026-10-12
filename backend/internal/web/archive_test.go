@@ -279,6 +279,50 @@ func TestExtractZip_nestedBackslashes(t *testing.T) {
 	}
 }
 
+// TestExtractZip_zstd verifies extraction of ZIP entries using the WinZip Zstandard extension
+// (method 93), produced by 7-Zip/WinZip. Without a registered decompressor the standard library
+// fails with "zip: unsupported compression algorithm".
+func TestExtractZip_zstd(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	zipPath := filepath.Join(tmp, "zstd.zip")
+	out := filepath.Join(tmp, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := strings.Repeat("zstd compressed content ", 1000)
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "data/blob.txt", Method: zipMethodZstd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = extractZip(zipPath, out); err != nil {
+		t.Fatalf("extractZip: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "data", "blob.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != content {
+		t.Fatalf("content length = %d, want %d", len(b), len(content))
+	}
+}
+
 // Benchmarks (optional, keep small)
 func BenchmarkNormalizeArchiveEntryName(b *testing.B) {
 	const name = `PRO1000\Winx64\NDIS65\e1c65x64.cat`
@@ -322,7 +366,7 @@ func TestExtractZipFilenameEncoding(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := t.TempDir()
-			err = extractZipWithEncoding(archivePath, out, tc.charset)
+			err = extractZipWithEncoding(archivePath, out, tc.charset, nil)
 			if tc.invalid {
 				if err == nil {
 					t.Fatal("expected error")

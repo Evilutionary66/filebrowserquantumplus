@@ -318,7 +318,14 @@ export default {
         if (this.deleteAfter) {
           payload.deleteAfter = true;
         }
-        await resourcesApi.createArchive(payload);
+        const result = await resourcesApi.createArchive(payload);
+        // 202 = queued as a background task; progress is shown in the task panel
+        if (result?.taskId) {
+          mutations.setReload(true);
+          mutations.closeTopPrompt();
+          this.creating = false;
+          return;
+        }
         mutations.setReload(true);
         mutations.closeTopPrompt();
 

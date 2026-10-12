@@ -59,14 +59,30 @@ func unixModeToFileMode(u uint32) os.FileMode {
 // By default, the rename system call is used. If src and dst are on different volumes,
 // CopyFile is used as a fallback and the source is removed synchronously on success.
 func MoveFile(src, dst string) error {
+	return MoveFileHook(src, dst, nil)
+}
+
+// MoveFileHook behaves like MoveFile but reports progress through hook. When the
+// move requires a cross-device copy fallback, byte-level progress is reported;
+// for a plain rename the hook is notified once with the full size so callers
+// can account for the item.
+func MoveFileHook(src, dst string, hook *CopyHook) error {
 	if err := os.Rename(src, dst); err != nil {
 		if !isCrossDeviceRenameError(err) {
 			return err
 		}
-		if err := CopyFile(src, dst); err != nil {
+		if err := CopyFileHook(src, dst, hook); err != nil {
 			return err
 		}
 		return os.RemoveAll(src)
+	}
+	if hook != nil {
+		if info, err := os.Lstat(src); err == nil && !info.IsDir() && info.Mode().IsRegular() {
+			if !hook.AddBytes(info.Size()) {
+				return ErrCopyCancelled
+			}
+		}
+		hook.ItemDone()
 	}
 	return nil
 }
@@ -77,6 +93,12 @@ func preserveFileMode(path string, mode os.FileMode) error {
 
 // CopyFile copies a file or directory from source to dest and returns an error if any.
 func CopyFile(source, dest string) error {
+	return CopyFileHook(source, dest, nil)
+}
+
+// CopyFileHook copies a file or directory from source to dest, reporting byte and
+// item progress through hook when provided.
+func CopyFileHook(source, dest string, hook *CopyHook) error {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return err
@@ -85,11 +107,12 @@ func CopyFile(source, dest string) error {
 		return copySymlink(source, dest)
 	}
 	if info.IsDir() {
-		return copyDirectory(source, dest)
+		return copyDirectoryHook(source, dest, hook)
 	}
-	return copySingleFile(source, dest)
+	return copySingleFile(source, dest, hook)
 }
 
+// copySymlink source to dest.
 func copySymlink(source, dest string) error {
 	target, err := os.Readlink(source)
 	if err != nil {
@@ -113,7 +136,7 @@ func copySymlink(source, dest string) error {
 }
 
 // copySingleFile handles copying a single file.
-func copySingleFile(source, dest string) error {
+func copySingleFile(source, dest string, hook *CopyHook) error {
 	// Get source file info to preserve permissions
 	srcInfo, err := os.Stat(source)
 	if err != nil {
@@ -142,7 +165,13 @@ func copySingleFile(source, dest string) error {
 	defer dst.Close()
 
 	// Copy the contents of the file.
-	if err = copyFileContents(dst, src); err != nil {
+	if err = copyFileContents(dst, src, hook); err != nil {
+		// When cancelled mid-copy, remove the partial destination file so no
+		// truncated copy is left behind.
+		if errors.Is(err, ErrCopyCancelled) {
+			_ = dst.Close()
+			_ = os.Remove(dest)
+		}
 		return err
 	}
 
@@ -161,7 +190,11 @@ func copySingleFile(source, dest string) error {
 	return nil
 }
 
-func copyFileContents(dst io.Writer, src io.Reader) error {
+// copyFileContents copies the contents of src to dst.
+func copyFileContents(dst io.Writer, src io.Reader, hook *CopyHook) error {
+	if hook != nil {
+		return copyFileContentsChunked(dst, src, hook)
+	}
 	_, err := io.Copy(dst, src)
 	if !errors.Is(err, syscall.EBADF) {
 		return err
@@ -173,8 +206,42 @@ func copyFileContents(dst io.Writer, src io.Reader) error {
 	return err
 }
 
+// copyFileContentsChunked copies in fixed-size chunks so byte-level progress can
+// be reported and cancellation can be observed mid-file.
+func copyFileContentsChunked(dst io.Writer, src io.Reader, hook *CopyHook) error {
+	buf := make([]byte, copyChunkSize)
+	for {
+		nr, rerr := src.Read(buf)
+		if nr > 0 {
+			nw, werr := dst.Write(buf[0:nr])
+			if nw > 0 {
+				if !hook.AddBytes(int64(nw)) {
+					return ErrCopyCancelled
+				}
+			}
+			if werr != nil {
+				return werr
+			}
+			if nr != nw {
+				return io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return nil
+			}
+			return rerr
+		}
+	}
+}
+
 // copyDirectory handles copying directories recursively.
 func copyDirectory(source, dest string) error {
+	return copyDirectoryHook(source, dest, nil)
+}
+
+// copyDirectoryHook copies directories recursively, reporting progress through hook.
+func copyDirectoryHook(source, dest string, hook *CopyHook) error {
 	srcInfo, err := os.Lstat(source)
 	if err != nil {
 		return err
@@ -196,6 +263,9 @@ func copyDirectory(source, dest string) error {
 
 	// Iterate over each entry in the directory.
 	for _, entry := range entries {
+		if hook != nil && hook.IsCancelled() {
+			return ErrCopyCancelled
+		}
 		srcPath := filepath.Join(source, entry.Name())
 		destPath := filepath.Join(dest, entry.Name())
 
@@ -212,16 +282,17 @@ func copyDirectory(source, dest string) error {
 		}
 		if entry.IsDir() {
 			// Recursively copy subdirectories.
-			err = copyDirectory(srcPath, destPath)
+			err = copyDirectoryHook(srcPath, destPath, hook)
 			if err != nil {
 				return err
 			}
 		} else {
 			// Copy files.
-			err = copySingleFile(srcPath, destPath)
+			err = copySingleFile(srcPath, destPath, hook)
 			if err != nil {
 				return err
 			}
+			hook.ItemDone()
 		}
 	}
 	return os.Chtimes(dest, srcInfo.ModTime(), srcInfo.ModTime())
@@ -338,4 +409,11 @@ func ClearDirectoryContents(dir string) error {
 		}
 	}
 	return nil
+}
+
+// CopyContents copies src to dst. When hook is non-nil it copies in chunks so
+// byte-level progress is reported and cancellation is honored mid-file
+// (ErrCopyCancelled). With a nil hook it behaves like io.Copy.
+func CopyContents(dst io.Writer, src io.Reader, hook *CopyHook) error {
+	return copyFileContents(dst, src, hook)
 }

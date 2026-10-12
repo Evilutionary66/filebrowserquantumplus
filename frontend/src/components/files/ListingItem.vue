@@ -686,24 +686,27 @@ export default {
         });
 
         try {
+          let result;
           if (getters.isShare()) {
-            await resourcesApi.moveCopyPublic(state.shareInfo.hash, items, "move", overwrite, rename);
+            result = await resourcesApi.moveCopyPublic(state.shareInfo.hash, items, "move", overwrite, rename);
           } else {
-            await resourcesApi.moveCopy(items, "move", overwrite, rename);
+            result = await resourcesApi.moveCopy(items, "move", overwrite, rename);
           }
-          // Notification to move into the folder
-          const buttonProps = {
-            icon: "folder",
-            buttons: [
-              goToItemNotificationButton(
-                this.$t("buttons.goToItem"),
-                this.source,
-                this.path,
-                getters.isShare()
-              ),
-            ],
-          };
-          notify.showSuccess(this.$t("prompts.moveSuccess"), buttonProps);
+          if (!result?.taskId) {
+            // Notification to move into the folder
+            const buttonProps = {
+              icon: "folder",
+              buttons: [
+                goToItemNotificationButton(
+                  this.$t("buttons.goToItem"),
+                  this.source,
+                  this.path,
+                  getters.isShare()
+                ),
+              ],
+            };
+            notify.showSuccess(this.$t("prompts.moveSuccess"), buttonProps);
+          }
           // Close the prompt after successful operation and reload items for reflect the changes
           mutations.closeTopPrompt();
           mutations.setReload(true);

@@ -25,13 +25,42 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/internal/archiveencoding"
 	activitydb "github.com/gtsteffaniak/filebrowser/backend/internal/database/activity"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/state"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/tasks"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/indexing"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 	"github.com/gtsteffaniak/go-cache/cache"
 	"github.com/gtsteffaniak/go-logger/logger"
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/time/rate"
 )
+
+// zipMethodZstd is the WinZip Zstandard extension (method 93), produced by 7-Zip, WinZip and
+// Z-ZIP when creating ZIP archives. The standard library rejects it with
+// "zip: unsupported compression algorithm", so a decoder is registered at init.
+const zipMethodZstd = 93
+
+func init() {
+	zip.RegisterDecompressor(zipMethodZstd, func(r io.Reader) io.ReadCloser {
+		dec, err := zstd.NewReader(r)
+		if err != nil {
+			return errReadCloser{err: err}
+		}
+		return dec.IOReadCloser()
+	})
+	// Registered so tests (and any future caller setting Method on a FileHeader) can write
+	// zstd entries; production archive creation keeps using the default Deflate method.
+	zip.RegisterCompressor(zipMethodZstd, func(w io.Writer) (io.WriteCloser, error) {
+		return zstd.NewWriter(w)
+	})
+}
+
+// errReadCloser surfaces a construction error from Read, as required by zip.Decompressor,
+// which has no way to return one.
+type errReadCloser struct{ err error }
+
+func (e errReadCloser) Read([]byte) (int, error) { return 0, e.err }
+func (e errReadCloser) Close() error             { return nil }
 
 // archiveMultiRequestIdle is how long without another Range/HEAD on the same archiveToken before
 // the spooled file is removed (abandoned chunked download). Each chunk request extends this window.
@@ -190,10 +219,10 @@ func serveArchiveWithServeContent(w http.ResponseWriter, r *http.Request, d *Con
 // @Produce json
 // @Param body body archiveCreateRequest true "Request body: fromSource, toSource (optional), paths, destination, format (optional), compression (optional)"
 // @Success 200 {object} map[string]string "Created; returns {\"path\": \"<destination path>\"}"
+// @Success 202 {object} map[string]string "Accepted; large archives run as a background task and return {\"taskId\": \"<task id>\", \"path\": \"<destination path>\"}"
 // @Failure 400 {object} map[string]string "Invalid request (e.g. missing required field, invalid path)"
 // @Failure 403 {object} map[string]string "Forbidden (create permission or access denied)"
 // @Failure 404 {object} map[string]string "Source not found"
-// @Failure 413 {object} map[string]string "Request Entity Too Large (archive size exceeds maxArchiveSizeGB limit)"
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources/archive [post]
 func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, error) {
@@ -320,17 +349,16 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 		return http.StatusBadRequest, fmt.Errorf("no paths accessible; add at least one path you have access to")
 	}
 
-	// Check archive size limit if configured
-	if settings.Config.Server.MaxArchiveSizeGB > 0 {
-		var estimatedSize int64
-		estimatedSize, err = computeArchiveSize(req.FromSource, itemPaths, d)
-		if err != nil {
-			return http.StatusInternalServerError, fmt.Errorf("failed to compute archive size: %v", err)
-		}
-		maxSizeBytes := settings.Config.Server.MaxArchiveSizeGB * 1024 * 1024 * 1024
-		if estimatedSize > maxSizeBytes {
-			return http.StatusRequestEntityTooLarge, fmt.Errorf("archive size would exceed the maximum allowed size (maxArchiveSize: %d GB)", settings.Config.Server.MaxArchiveSizeGB)
-		}
+	// Large archives run as a background task so the request returns immediately and the
+	// client polls progress instead of blocking. The size estimate comes from index
+	// metadata and is best effort: if it fails the archive is created synchronously.
+	totalBytes, sizeErr := computeArchiveSize(req.FromSource, itemPaths, d)
+	if sizeErr != nil {
+		logger.Debugf("Failed to estimate archive size for %s: %v", req.Destination, sizeErr)
+		totalBytes = 0
+	}
+	if totalBytes > asyncTaskBytesThreshold {
+		return startArchiveTask(w, r, d, req, itemPaths, destFileReal, destSource, format, compression, totalBytes)
 	}
 
 	var createErr error
@@ -341,39 +369,16 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 	defer file.Close()
 
 	if format == "zip" {
-		createErr = createZip(d, req.FromSource, file, itemPaths...)
+		createErr = createZip(d, req.FromSource, file, nil, itemPaths...)
 	} else {
-		createErr = createTarGzWithLevel(d, req.FromSource, file, compression, itemPaths...)
+		createErr = createTarGzWithLevel(d, req.FromSource, file, compression, nil, itemPaths...)
 	}
 	if createErr != nil {
 		return http.StatusInternalServerError, createErr
 	}
 
 	if req.DeleteAfter {
-		type itemToDelete struct {
-			realPath string
-			isDir    bool
-		}
-		var toDelete []itemToDelete
-		for _, full := range itemPaths {
-			realPath, isDir, err := idx.GetRealPath(full)
-			if err != nil {
-				continue
-			}
-			toDelete = append(toDelete, itemToDelete{realPath: realPath, isDir: isDir})
-		}
-		for i := 0; i < len(toDelete); i++ {
-			for j := i + 1; j < len(toDelete); j++ {
-				if len(toDelete[j].realPath) > len(toDelete[i].realPath) {
-					toDelete[i], toDelete[j] = toDelete[j], toDelete[i]
-				}
-			}
-		}
-		for _, item := range toDelete {
-			if err := files.DeleteFiles(req.FromSource, item.realPath, item.isDir); err != nil {
-				logger.Errorf("Failed to delete source after archive: %v", err)
-			}
-		}
+		deleteArchivedSources(req.FromSource, itemPaths, idx)
 	}
 
 	activity.RecordArchive(r, toActor(d), activitydb.EventArchive, req.FromSource, req.Destination, req.Paths)
@@ -398,10 +403,10 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 // @Produce json
 // @Param body body unarchiveRequest true "Request body: fromSource, toSource (optional), path, destination, deleteAfter (optional)"
 // @Success 200 {object} map[string]interface{} "Preview returns suggested and candidates; extraction returns path and source. Extracted; returns {\"path\": \"<destination path>\", \"source\": \"<toSource>\"}"
+// @Success 202 {object} map[string]string "Accepted; large extractions run as a background task and return {\"taskId\": \"<task id>\", \"path\": \"<destination path>\", \"source\": \"<toSource>\"}"
 // @Failure 400 {object} map[string]string "Invalid request (e.g. missing required field, unsupported format)"
 // @Failure 403 {object} map[string]string "Forbidden (create permission or access denied)"
 // @Failure 404 {object} map[string]string "Source or archive file not found"
-// @Failure 413 {object} map[string]string "Request Entity Too Large (archive size exceeds maxArchiveSizeGB limit)"
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources/unarchive [post]
 func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, error) {
@@ -501,14 +506,6 @@ func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, 
 		return http.StatusBadRequest, fmt.Errorf("path is not an archive file: %s", req.Path)
 	}
 
-	// Check archive size limit if configured
-	if settings.Config.Server.MaxArchiveSizeGB > 0 {
-		maxSizeBytes := settings.Config.Server.MaxArchiveSizeGB * 1024 * 1024 * 1024
-		if info.Size() > maxSizeBytes {
-			return http.StatusRequestEntityTooLarge, fmt.Errorf("archive size would exceed the maximum allowed size (maxArchiveSize: %d GB)", settings.Config.Server.MaxArchiveSizeGB)
-		}
-	}
-
 	lower := strings.ToLower(archiveReal)
 	if req.Preview {
 		if !strings.HasSuffix(lower, ".zip") {
@@ -521,11 +518,19 @@ func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, 
 		defer zr.Close()
 		return RenderJSON(w, r, archiveencoding.Inspect(zr.File), http.StatusOK)
 	}
+
+	// Large extractions run as a background task so the request returns immediately and the
+	// client polls progress instead of blocking. For ZIPs the total comes from the central
+	// directory (uncompressed sizes, cheap to read); tar.gz uses the compressed file size.
+	if totalBytes, ok := computeUnarchiveSize(lower, archiveReal, info); ok && totalBytes > asyncTaskBytesThreshold {
+		return startUnarchiveTask(w, r, d, req, archiveReal, destReal, totalBytes)
+	}
+
 	var extractErr error
 	if strings.HasSuffix(lower, ".zip") {
-		extractErr = extractZipWithEncoding(archiveReal, destReal, req.FilenameEncoding)
+		extractErr = extractZipWithEncoding(archiveReal, destReal, req.FilenameEncoding, nil)
 	} else if strings.HasSuffix(lower, ".tar.gz") || (strings.HasSuffix(lower, ".tgz")) {
-		extractErr = extractTarGz(archiveReal, destReal)
+		extractErr = extractTarGz(archiveReal, destReal, nil)
 	} else {
 		return http.StatusBadRequest, fmt.Errorf("unsupported archive format (use .zip or .tar.gz)")
 	}
@@ -546,9 +551,203 @@ func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, 
 	return RenderJSON(w, r, map[string]string{"path": req.Destination, "source": req.ToSource}, http.StatusOK)
 }
 
+// computeUnarchiveSize returns the total bytes an extraction is expected to produce, used to decide
+// whether extraction should run as a background task. For ZIPs the sum of uncompressed entry sizes
+// is read from the central directory (cheap); for tar.gz the compressed file size is used as the
+// progress baseline (extraction reports compressed bytes consumed via the counting reader).
+// The second return is false when the size could not be determined, meaning "run synchronously".
+func computeUnarchiveSize(lower, archiveReal string, info os.FileInfo) (int64, bool) {
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		zr, err := zip.OpenReader(archiveReal)
+		if err != nil {
+			return 0, false
+		}
+		defer zr.Close()
+		var total int64
+		for _, f := range zr.File {
+			total += int64(f.UncompressedSize64)
+		}
+		return total, true
+	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
+		return info.Size(), true
+	default:
+		return 0, false
+	}
+}
+
+// deleteArchivedSources removes the original items after a successful archive create, deleting the
+// deepest paths first so recursive directory deletes stay valid.
+func deleteArchivedSources(source string, itemPaths []string, idx *indexing.Index) {
+	type itemToDelete struct {
+		realPath string
+		isDir    bool
+	}
+	var toDelete []itemToDelete
+	for _, full := range itemPaths {
+		realPath, isDir, err := idx.GetRealPath(full)
+		if err != nil {
+			continue
+		}
+		toDelete = append(toDelete, itemToDelete{realPath: realPath, isDir: isDir})
+	}
+	sort.Slice(toDelete, func(i, j int) bool {
+		return len(toDelete[i].realPath) > len(toDelete[j].realPath)
+	})
+	for _, item := range toDelete {
+		if err := files.DeleteFiles(source, item.realPath, item.isDir); err != nil {
+			logger.Errorf("Failed to delete source after archive: %v", err)
+		}
+	}
+}
+
+// startArchiveTask kicks off a background task that builds the archive on the server. The request
+// returns 202 with the task id; progress is polled via /api/tasks like copy/move/delete operations.
+func startArchiveTask(w http.ResponseWriter, r *http.Request, d *Context, req archiveCreateRequest,
+	itemPaths []string, destFileReal, destSource, format string, compression int, totalBytes int64) (int, error) {
+	fromPath := req.Paths[0]
+	if len(req.Paths) > 1 {
+		fromPath = fmt.Sprintf("%d items", len(req.Paths))
+	}
+	items := []tasks.Item{{
+		FromSource: req.FromSource,
+		FromPath:   fromPath,
+		ToSource:   destSource,
+		ToPath:     req.Destination,
+		Status:     tasks.ItemPending,
+	}}
+	t := tasks.New(d.User.Username, "archive", items, totalBytes)
+	actor := toActor(d)
+	go runArchiveTask(t, d, req.FromSource, req.DeleteAfter, itemPaths, destFileReal, format, compression, totalBytes, actor)
+	return RenderJSON(w, r, map[string]interface{}{"taskId": t.ID, "path": req.Destination}, http.StatusAccepted)
+}
+
+// runArchiveTask performs archive creation for a background task, reporting progress through the
+// task's copy hook (source bytes read) and honoring cancellation mid-file.
+func runArchiveTask(t *tasks.Task, d *Context, fromSource string, deleteAfter bool,
+	itemPaths []string, destFileReal, format string, compression int, totalBytes int64, actor *activity.Actor) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("archive task %s panicked: %v", t.ID, rec)
+			t.MarkItemFailed(0, fmt.Sprintf("%v", rec))
+		}
+		t.Finish()
+	}()
+	t.Begin()
+	if t.CancelRequested() {
+		t.MarkItemCancelled(0)
+		return
+	}
+	t.MarkItemRunning(0)
+
+	file, err := os.OpenFile(destFileReal, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileutils.EffectiveFilePerm())
+	if err != nil {
+		logger.Errorf("archive task %s: open destination: %v", t.ID, err)
+		t.MarkItemFailed(0, err.Error())
+		return
+	}
+	var createErr error
+	if format == "zip" {
+		createErr = createZip(d, fromSource, file, t.Hook(), itemPaths...)
+	} else {
+		createErr = createTarGzWithLevel(d, fromSource, file, compression, t.Hook(), itemPaths...)
+	}
+	closeErr := file.Close()
+	if createErr == nil {
+		createErr = closeErr
+	}
+
+	switch {
+	case errors.Is(createErr, fileutils.ErrCopyCancelled):
+		if err := os.Remove(destFileReal); err != nil && !os.IsNotExist(err) {
+			logger.Debugf("archive task %s: removing partial archive: %v", t.ID, err)
+		}
+		t.MarkItemCancelled(0)
+		return
+	case createErr != nil:
+		logger.Errorf("archive task %s: %v", t.ID, createErr)
+		_ = os.Remove(destFileReal)
+		t.MarkItemFailed(0, createErr.Error())
+		return
+	}
+
+	t.MarkItemDone(0)
+	t.SyncBytes(totalBytes)
+	if deleteAfter {
+		idx := indexing.GetIndex(fromSource)
+		if idx != nil {
+			deleteArchivedSources(fromSource, itemPaths, idx)
+		}
+	}
+	activity.RecordArchive(nil, actor, activitydb.EventArchive, fromSource, t.Items[0].ToPath, []string{t.Items[0].FromPath})
+}
+
+// startUnarchiveTask kicks off a background extraction task; the request returns 202 with the task id.
+func startUnarchiveTask(w http.ResponseWriter, r *http.Request, d *Context, req unarchiveRequest,
+	archiveReal, destReal string, totalBytes int64) (int, error) {
+	items := []tasks.Item{{
+		FromSource: req.FromSource,
+		FromPath:   req.Path,
+		ToSource:   req.ToSource,
+		ToPath:     req.Destination,
+		Status:     tasks.ItemPending,
+	}}
+	t := tasks.New(d.User.Username, "unarchive", items, totalBytes)
+	actor := toActor(d)
+	go runUnarchiveTask(t, archiveReal, destReal, req.FilenameEncoding, req.DeleteAfter, req.FromSource, req.ToSource, req.Path, req.Destination, totalBytes, actor)
+	return RenderJSON(w, r, map[string]interface{}{"taskId": t.ID, "path": req.Destination, "source": req.ToSource}, http.StatusAccepted)
+}
+
+// runUnarchiveTask performs extraction for a background task. ZIP progress counts uncompressed bytes
+// written; tar.gz counts compressed bytes read (matching computeUnarchiveSize's baseline).
+func runUnarchiveTask(t *tasks.Task, archiveReal, destReal, filenameEncoding string, deleteAfter bool,
+	fromSource, toSource, archivePath, destination string, totalBytes int64, actor *activity.Actor) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("unarchive task %s panicked: %v", t.ID, rec)
+			t.MarkItemFailed(0, fmt.Sprintf("%v", rec))
+		}
+		t.Finish()
+	}()
+	t.Begin()
+	if t.CancelRequested() {
+		t.MarkItemCancelled(0)
+		return
+	}
+	t.MarkItemRunning(0)
+
+	var extractErr error
+	lower := strings.ToLower(archiveReal)
+	if strings.HasSuffix(lower, ".zip") {
+		extractErr = extractZipWithEncoding(archiveReal, destReal, filenameEncoding, t.Hook())
+	} else {
+		extractErr = extractTarGz(archiveReal, destReal, t.Hook())
+	}
+
+	switch {
+	case errors.Is(extractErr, fileutils.ErrCopyCancelled):
+		t.MarkItemCancelled(0)
+		return
+	case extractErr != nil:
+		logger.Errorf("unarchive task %s: %v", t.ID, extractErr)
+		t.MarkItemFailed(0, extractErr.Error())
+		return
+	}
+
+	t.MarkItemDone(0)
+	t.SyncBytes(totalBytes)
+	if deleteAfter {
+		if err := os.Remove(archiveReal); err != nil {
+			logger.Errorf("Failed to delete archive after extract: %v", err)
+		}
+	}
+	activity.RecordArchive(nil, actor, activitydb.EventUnarchive, fromSource, destination, []string{archivePath})
+}
+
 // addFile adds a file or directory to a tar or zip archive, respecting access rules.
 // For shares, path is already resolved; for users, access is checked via state.AccessPermitted.
-func addFile(source string, path string, d *Context, tarWriter *tar.Writer, zipWriter *zip.Writer, flatten bool) error {
+// When hook is non-nil, file contents are copied in chunks with progress reporting and cancellation.
+func addFile(source string, path string, d *Context, tarWriter *tar.Writer, zipWriter *zip.Writer, flatten bool, hook *fileutils.CopyHook) error {
 	idx := indexing.GetIndex(source)
 	if idx == nil {
 		return fmt.Errorf("source %s is not available", source)
@@ -630,15 +829,15 @@ func addFile(source string, path string, d *Context, tarWriter *tar.Writer, zipW
 				}
 				return nil
 			}
-			return addSingleFile(filePath, relPath, zipWriter, tarWriter)
+			return addSingleFile(filePath, relPath, zipWriter, tarWriter, hook)
 		})
 	}
 	// For a single file, use the base name as the archive path
-	return addSingleFile(realPath, baseName, zipWriter, tarWriter)
+	return addSingleFile(realPath, baseName, zipWriter, tarWriter, hook)
 }
 
 // addSingleFile writes one file into the given zip or tar writer.
-func addSingleFile(realPath, archivePath string, zipWriter *zip.Writer, tarWriter *tar.Writer) error {
+func addSingleFile(realPath, archivePath string, zipWriter *zip.Writer, tarWriter *tar.Writer, hook *fileutils.CopyHook) error {
 	file, err := os.Open(realPath)
 	if err != nil {
 		if strings.Contains(err.Error(), "is a directory") {
@@ -666,8 +865,7 @@ func addSingleFile(realPath, archivePath string, zipWriter *zip.Writer, tarWrite
 		if err = tarWriter.WriteHeader(header); err != nil {
 			return err
 		}
-		_, err = io.Copy(tarWriter, file)
-		return err
+		return fileutils.CopyContents(tarWriter, file, hook)
 	}
 
 	if zipWriter != nil {
@@ -680,19 +878,19 @@ func addSingleFile(realPath, archivePath string, zipWriter *zip.Writer, tarWrite
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(writer, file)
-		return err
+		return fileutils.CopyContents(writer, file, hook)
 	}
 
 	return nil
 }
 
 // createZip writes a ZIP archive into w containing the given paths; access rules apply.
-func createZip(d *Context, source string, w io.Writer, filenames ...string) error {
+// A non-nil hook enables progress reporting and cancellation for background tasks.
+func createZip(d *Context, source string, w io.Writer, hook *fileutils.CopyHook, filenames ...string) error {
 	zipWriter := zip.NewWriter(w)
 
 	for _, filepath := range filenames {
-		err := addFile(source, filepath, d, nil, zipWriter, false)
+		err := addFile(source, filepath, d, nil, zipWriter, false, hook)
 		if err != nil {
 			logger.Errorf("Failed to add %s to ZIP: %v", filepath, err)
 			return err
@@ -706,12 +904,12 @@ func createZip(d *Context, source string, w io.Writer, filenames ...string) erro
 }
 
 // createTarGz writes a tar.gz archive into w containing the given paths; access rules apply.
-func createTarGz(d *Context, source string, w io.Writer, filenames ...string) error {
+func createTarGz(d *Context, source string, w io.Writer, hook *fileutils.CopyHook, filenames ...string) error {
 	gzWriter := gzip.NewWriter(w)
 	tarWriter := tar.NewWriter(gzWriter)
 
 	for _, filepath := range filenames {
-		err := addFile(source, filepath, d, tarWriter, nil, false)
+		err := addFile(source, filepath, d, tarWriter, nil, false, hook)
 		if err != nil {
 			logger.Errorf("Failed to add %s to TAR.GZ: %v", filepath, err)
 			return err
@@ -728,7 +926,7 @@ func createTarGz(d *Context, source string, w io.Writer, filenames ...string) er
 }
 
 // createTarGzWithLevel writes a tar.gz archive into w with the given gzip compression level (0=default, 1-9).
-func createTarGzWithLevel(d *Context, source string, w io.Writer, level int, filenames ...string) error {
+func createTarGzWithLevel(d *Context, source string, w io.Writer, level int, hook *fileutils.CopyHook, filenames ...string) error {
 	var gzWriter *gzip.Writer
 	if level >= 1 && level <= 9 {
 		var err error
@@ -744,7 +942,7 @@ func createTarGzWithLevel(d *Context, source string, w io.Writer, level int, fil
 	defer tarWriter.Close()
 
 	for _, filepath := range filenames {
-		err := addFile(source, filepath, d, tarWriter, nil, false)
+		err := addFile(source, filepath, d, tarWriter, nil, false, hook)
 		if err != nil {
 			logger.Errorf("Failed to add %s to TAR.GZ: %v", filepath, err)
 			return err
@@ -852,9 +1050,9 @@ func BuildAndStreamArchive(w http.ResponseWriter, r *http.Request, d *Context, s
 			writer = newThrottledWriter(w, limit, burst, r.Context())
 		}
 		if extension == ".zip" {
-			err = createZip(d, source, writer, fileList...)
+			err = createZip(d, source, writer, nil, fileList...)
 		} else {
-			err = createTarGz(d, source, writer, fileList...)
+			err = createTarGz(d, source, writer, nil, fileList...)
 		}
 		if err != nil {
 			return http.StatusInternalServerError, err
@@ -870,9 +1068,9 @@ func BuildAndStreamArchive(w http.ResponseWriter, r *http.Request, d *Context, s
 	tmpPath := tmpF.Name()
 
 	if extension == ".zip" {
-		err = createZip(d, source, tmpF, fileList...)
+		err = createZip(d, source, tmpF, nil, fileList...)
 	} else {
-		err = createTarGz(d, source, tmpF, fileList...)
+		err = createTarGz(d, source, tmpF, nil, fileList...)
 	}
 	if err != nil {
 		_ = tmpF.Close()
@@ -949,7 +1147,7 @@ type unarchiveRequest struct {
 	ToSource string `json:"toSource"`
 	// Path to the archive file on fromSource; .zip, .tar.gz, or .tgz (required). Example: "/downloads/data.zip"
 	Path string `json:"path"`
-	// Directory path on toSource to extract into (required). Example: "/projects/imported"
+	// Directory path on toSource to extract into (required). Example: "/projects/imported"`
 	Destination string `json:"destination"`
 	// If true, delete the archive file after successful extraction (optional; default: false). Example: true
 	DeleteAfter bool `json:"deleteAfter"`
@@ -1094,7 +1292,8 @@ func extractArchivedDir(destPath string, mode fs.FileMode, modTime time.Time) er
 }
 
 // extractArchivedRegularFile writes one regular file from src (closed by this function) and reapplies mode and mtime.
-func extractArchivedRegularFile(destPath string, mode fs.FileMode, modTime time.Time, src io.ReadCloser) error {
+// A non-nil hook enables chunked copying with progress reporting and cancellation (ErrCopyCancelled).
+func extractArchivedRegularFile(destPath string, mode fs.FileMode, modTime time.Time, src io.ReadCloser, hook *fileutils.CopyHook) error {
 	defer func() { _ = src.Close() }()
 	parent := filepath.Dir(destPath)
 	if err := os.MkdirAll(parent, fileutils.EffectiveDirPerm()); err != nil {
@@ -1108,7 +1307,7 @@ func extractArchivedRegularFile(destPath string, mode fs.FileMode, modTime time.
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(out, src)
+	copyErr := fileutils.CopyContents(out, src, hook)
 	cerr := out.Close()
 	if copyErr != nil {
 		return copyErr
@@ -1139,10 +1338,12 @@ func extractArchivedSymlink(destRoot, destPath, target string, modTime time.Time
 }
 
 func extractZip(archivePath, destDir string) error {
-	return extractZipWithEncoding(archivePath, destDir, "")
+	return extractZipWithEncoding(archivePath, destDir, "", nil)
 }
 
-func extractZipWithEncoding(archivePath, destDir, charset string) error {
+// extractZipWithEncoding extracts a ZIP archive. A non-nil hook enables progress
+// reporting (uncompressed bytes written) and cancellation (ErrCopyCancelled).
+func extractZipWithEncoding(archivePath, destDir, charset string, hook *fileutils.CopyHook) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return err
@@ -1200,6 +1401,9 @@ func extractZipWithEncoding(archivePath, destDir, charset string) error {
 	})
 
 	for _, o := range ordered {
+		if hook != nil && hook.IsCancelled() {
+			return fileutils.ErrCopyCancelled
+		}
 		f := o.f
 		var destPath string
 		destPath, err = safeExtractPath(destDir, o.name)
@@ -1243,21 +1447,40 @@ func extractZipWithEncoding(archivePath, destDir, charset string) error {
 		if err != nil {
 			return err
 		}
-		if err = extractArchivedRegularFile(destPath, mode, f.Modified, rc); err != nil {
+		if err = extractArchivedRegularFile(destPath, mode, f.Modified, rc, hook); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func extractTarGz(archivePath, destDir string) error {
+// countingReader reports bytes read through a CopyHook so tar.gz extraction can
+// report progress based on compressed bytes consumed.
+type countingReader struct {
+	src  io.Reader
+	hook *fileutils.CopyHook
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.src.Read(p)
+	if n > 0 && !c.hook.AddBytes(int64(n)) {
+		return n, fileutils.ErrCopyCancelled
+	}
+	return n, err
+}
+
+func extractTarGz(archivePath, destDir string, hook *fileutils.CopyHook) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	gz, err := gzip.NewReader(f)
+	var src io.Reader = f
+	if hook != nil {
+		src = &countingReader{src: f, hook: hook}
+	}
+	gz, err := gzip.NewReader(src)
 	if err != nil {
 		return err
 	}
@@ -1265,6 +1488,9 @@ func extractTarGz(archivePath, destDir string) error {
 
 	tr := tar.NewReader(gz)
 	for {
+		if hook != nil && hook.IsCancelled() {
+			return fileutils.ErrCopyCancelled
+		}
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -1286,7 +1512,7 @@ func extractTarGz(archivePath, destDir string) error {
 			}
 		case tar.TypeReg:
 			mode := h.FileInfo().Mode()
-			if err = extractArchivedRegularFile(destPath, mode, h.ModTime, io.NopCloser(tr)); err != nil {
+			if err = extractArchivedRegularFile(destPath, mode, h.ModTime, io.NopCloser(tr), hook); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:

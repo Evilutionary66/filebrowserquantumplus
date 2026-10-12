@@ -230,13 +230,17 @@ export default {
           toSource: this.item.source,
         }];
 
+        let result;
         if (getters.isShare()) {
-          await resourcesApi.moveCopyPublic(state.shareInfo.hash, items, "move");
+          result = await resourcesApi.moveCopyPublic(state.shareInfo.hash, items, "move");
         } else {
-          await resourcesApi.moveCopy(items, "move");
+          result = await resourcesApi.moveCopy(items, "move");
         }
-        notify.showSuccessToast(this.$t("prompts.renameSuccess"));
-        eventBus.emit('itemsRenamed');
+        // 202 accepted: queued as a background task; taskManager reports completion
+        if (!result?.taskId) {
+          notify.showSuccessToast(this.$t("prompts.renameSuccess"));
+          eventBus.emit('itemsRenamed');
+        }
         mutations.closeTopPrompt();
 
         if (this.isPreviewView) {

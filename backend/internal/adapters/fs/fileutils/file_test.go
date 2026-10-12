@@ -361,7 +361,7 @@ func TestCopyFileContentsFallsBackAfterCopyFileRangeBadFileDescriptor(t *testing
 	src := struct{ io.Reader }{bytes.NewBufferString(content)}
 	dst := &copyFileRangeRejectingWriter{}
 
-	if err := copyFileContents(dst, src); err != nil {
+	if err := copyFileContents(dst, src, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := dst.String(); got != content {

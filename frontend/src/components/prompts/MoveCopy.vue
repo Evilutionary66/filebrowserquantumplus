@@ -372,6 +372,8 @@ export default {
         // Check if there were any failures in the result
         const hasFailures = result?.failed && result.failed.length > 0;
         const hasSuccesses = result?.succeeded && result.succeeded.length > 0;
+        // 202 accepted: the operation runs as a background task; taskManager reports completion
+        const acceptedAsTask = !!result?.taskId;
 
         if (hasFailures && !hasSuccesses) {
           const errorMessage = extractMoveCopyErrorMessage(
@@ -405,7 +407,7 @@ export default {
           mutations.closeTopPrompt(); // close conflict prompt
           mutations.closeTopPrompt(); // close moveCopy prompt
 
-          if (!hasFailures || hasSuccesses) {
+          if (!acceptedAsTask && (!hasFailures || hasSuccesses)) {
             notify.showSuccessToast(this.$t("prompts.moveSuccess"));
             notifyMoveCopyComplete("move", this.localItems.length);
           }
@@ -429,7 +431,7 @@ export default {
           mutations.setSearch(false); // close search if open
 
           // Only show success notification if there were no failures (or partial success was already shown)
-          if (!hasFailures || hasSuccesses) {
+          if (!acceptedAsTask && (!hasFailures || hasSuccesses)) {
             // Store destination info for the button action
             const destSource = this.destSource;
             const destPath = this.destPath;

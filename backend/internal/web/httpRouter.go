@@ -83,6 +83,14 @@ func configureHTTPRouter(router, api, publicRoutes, publicApi *http.ServeMux) {
 	publicApi.HandleFunc("GET /resources/view", withTimeout(time60s, withHashFileHelper(PublicViewHandler)))
 	publicApi.HandleFunc("GET /resources/preview", withTimeout(time30s, withHashFileHelper(publicPreviewHandler)))
 	publicApi.HandleFunc("POST /resources/pause", withHashFile(PublicPauseHandler))
+
+	// ========================================
+	// Background Task Routes - /api/tasks/
+	// ========================================
+	api.HandleFunc("GET /tasks", withUser(tasksListHandler))
+	api.HandleFunc("GET /tasks/{id}", withUser(taskGetHandler))
+	api.HandleFunc("POST /tasks/{id}/cancel", withUser(taskCancelHandler))
+
 	// Legacy routes (backwards compatibility)
 	api.HandleFunc("GET /raw", withUser(downloadHandler))
 	publicApi.HandleFunc("GET /raw", withHashFile(publicDownloadHandler))

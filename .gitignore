@@ -13,6 +13,8 @@ rice-box.go
 /backend/backend
 /backend/filebrowser
 /backend/filebrowser.exe
+/backend/filebrowser-*
+/backend/setup-gofitz-cgo.exe
 frontend/tsconfig.tsbuildinfo
 /backend/backend.exe
 /backend/playwright-files.db

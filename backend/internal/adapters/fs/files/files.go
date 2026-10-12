@@ -753,10 +753,15 @@ func validateMoveDestination(src, dst string, isSrcDir bool) error {
 }
 
 func MoveResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string) error {
-	return moveResourceImpl(isSrcDir, sourceIndex, destIndex, realsrc, realdst, svc())
+	return moveResourceImpl(isSrcDir, sourceIndex, destIndex, realsrc, realdst, svc(), nil)
 }
 
-func moveResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, s *Service) error {
+// MoveResourceHook is MoveResource with a progress/cancellation hook applied to the physical move.
+func MoveResourceHook(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, hook *fileutils.CopyHook) error {
+	return moveResourceImpl(isSrcDir, sourceIndex, destIndex, realsrc, realdst, svc(), hook)
+}
+
+func moveResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, s *Service, hook *fileutils.CopyHook) error {
 	// Check if source and destination are the same file
 	if realsrc == realdst {
 		return fmt.Errorf("cannot move a file to itself: %s", realsrc)
@@ -782,7 +787,7 @@ func moveResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst st
 	srcParentPath := filepath.Dir(realsrc)
 
 	// Perform the physical move
-	err := fileutils.MoveFile(realsrc, realdst)
+	err := fileutils.MoveFileHook(realsrc, realdst, hook)
 	if err != nil {
 		return err
 	}
@@ -841,6 +846,15 @@ func moveResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst st
 }
 
 func CopyResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string) error {
+	return copyResourceImpl(isSrcDir, sourceIndex, destIndex, realsrc, realdst, nil)
+}
+
+// CopyResourceHook is CopyResource with a progress/cancellation hook applied to the physical copy.
+func CopyResourceHook(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, hook *fileutils.CopyHook) error {
+	return copyResourceImpl(isSrcDir, sourceIndex, destIndex, realsrc, realdst, hook)
+}
+
+func copyResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, hook *fileutils.CopyHook) error {
 	// Check if source and destination are the same file
 	if realsrc == realdst {
 		return fmt.Errorf("cannot copy a file to itself: %s", realsrc)
@@ -853,7 +867,7 @@ func CopyResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string
 	}
 
 	// Perform the physical copy
-	err := fileutils.CopyFile(realsrc, realdst)
+	err := fileutils.CopyFileHook(realsrc, realdst, hook)
 	if err != nil {
 		logger.Errorf("[COPY] Physical copy failed: %v", err)
 		return err

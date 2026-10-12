@@ -14,6 +14,7 @@ import { isMediaFile } from "@/utils/mediaFile.js"
 import { getObjectProperty } from "@/utils/object.js"
 import { getStreamURL, getStreamURLPublic } from "./media.js"
 import { invalidateDirMetadataCache } from '@/utils/metadataCache.js'
+import { taskManager } from '@/utils/taskManager.js'
 
 export { fetchPreviewImage } from "@/utils/previewRequests.js"
 
@@ -253,6 +254,13 @@ export async function bulkDelete(items) {
       body: JSON.stringify(items),
     })
     const data = await response.json()
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (response.status === 202) {
+      if (data.taskId) {
+        taskManager.track(data.taskId)
+      }
+      return { ...data, accepted: true }
+    }
     // 200 = all succeeded, 207 = partial success (some succeeded, some failed)
     if (response.status === 200 || response.status === 207) {
       for (const item of items) {
@@ -990,6 +998,14 @@ export async function moveCopy(
 
     const data = await response.json()
 
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (response.status === 202) {
+      if (data.taskId) {
+        taskManager.track(data.taskId)
+      }
+      return { ...data, accepted: true }
+    }
+
     // 200 = all succeeded, 207 = partial success (some succeeded, some failed)
     if (response.status === 200 || response.status === 207) {
       for (const item of items) {
@@ -1194,7 +1210,12 @@ export async function createArchive(opts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return response.json();
+    const data = await response.json();
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (data?.taskId) {
+      taskManager.track(data.taskId);
+    }
+    return data;
   } catch (err) {
     notify.showError(err.message || "Error creating archive");
     throw err;
@@ -1504,6 +1525,12 @@ export async function bulkDeletePublic(items) {
 
     const error = new Error(data.message || response.statusText)
     error.status = response.status
+    if (data.failed) {
+      error.failed = data.failed
+    }
+    if (data.succeeded) {
+      error.succeeded = data.succeeded
+    }
     throw error
   } catch (err) {
     if (err.status && err.status !== 200 && err.status !== 207) {
@@ -1554,6 +1581,15 @@ export async function moveCopyPublic(
 
     const data = await response.json()
 
+    // 202 = queued as a background task; progress is tracked via taskManager
+    if (response.status === 202) {
+      if (data.taskId) {
+        taskManager.track(data.taskId)
+      }
+      return { ...data, accepted: true }
+    }
+
+    // 200 = all succeeded, 207 = partial success (some succeeded, some failed)
     if (response.status === 200 || response.status === 207) {
       for (const item of items) {
         invalidateDirMetadataCache({ isShare: true, hash, path: getParentDir(item.from) })

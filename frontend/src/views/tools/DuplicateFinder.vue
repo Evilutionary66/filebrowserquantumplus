@@ -472,6 +472,8 @@ export default {
       try {
         const response = await resourcesApi.bulkDelete(itemsToDelete);
 
+        // 202 accepted: queued as a background task; nothing to bookkeep yet
+        if (!response?.taskId) {
         // Process succeeded items
         if (response.succeeded && response.succeeded.length > 0) {
           for (const item of response.succeeded) {
@@ -488,7 +490,7 @@ export default {
             this.failedFiles.set(key, item.message || 'Unknown error');
           }
         }
-
+        }
         // Clear selection after deletion attempt
         this.selectedIndices.clear();
         eventBus.emit('duplicateFinderSelectionChanged', 0);
